@@ -1,0 +1,17 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+terraform.tfvars
+backend.hcl
+crash.log
+
+# Secrets and generated files
+*.pem
+.env
+.vault_pass
+.vault_pass.txt
+ansible/inventory.ini
+old_tf_backup/
