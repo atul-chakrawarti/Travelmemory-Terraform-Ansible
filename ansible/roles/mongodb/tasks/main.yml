@@ -1,0 +1,91 @@
+---
+- name: Download the MongoDB 8.0 signing key
+  ansible.builtin.get_url:
+    url: https://pgp.mongodb.com/server-8.0.asc
+    dest: /usr/share/keyrings/mongodb-server-8.0.asc
+    mode: "0644"
+
+- name: Add the MongoDB apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.asc] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse"
+    filename: mongodb-org-8.0
+    state: present
+
+- name: Install MongoDB server and shell
+  ansible.builtin.apt:
+    name: mongodb-org
+    state: present
+    update_cache: true
+
+- name: Configure mongod (bind to private IP, authorization on)
+  ansible.builtin.template:
+    src: mongod.conf.j2
+    dest: /etc/mongod.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mongod
+
+- name: Start and enable mongod
+  ansible.builtin.service:
+    name: mongod
+    state: started
+    enabled: true
+
+- name: Apply config changes before creating users
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for MongoDB to accept connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 27017
+    timeout: 60
+
+- name: Check whether the admin user already exists
+  ansible.builtin.shell: >
+    mongosh --quiet --host 127.0.0.1
+    -u "{{ mongo_admin_user }}" -p "$MONGO_PW" --authenticationDatabase admin
+    --eval 'db.runCommand({ping:1}).ok'
+  environment:
+    MONGO_PW: "{{ mongo_admin_password }}"
+  register: admin_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Create the admin user (localhost exception)
+  ansible.builtin.shell: >
+    mongosh --quiet --host 127.0.0.1 --eval
+    'db.getSiblingDB("admin").createUser({user: process.env.MONGO_USER, pwd: process.env.MONGO_PW, roles: [{role: "root", db: "admin"}]})'
+  environment:
+    MONGO_USER: "{{ mongo_admin_user }}"
+    MONGO_PW: "{{ mongo_admin_password }}"
+  when: admin_check.rc != 0
+  changed_when: true
+  no_log: true
+
+- name: Check whether the application user already exists
+  ansible.builtin.shell: >
+    mongosh --quiet --host 127.0.0.1
+    -u "{{ mongo_app_user }}" -p "$MONGO_PW" --authenticationDatabase "{{ mongo_db_name }}"
+    --eval 'db.runCommand({ping:1}).ok'
+  environment:
+    MONGO_PW: "{{ mongo_app_password }}"
+  register: app_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Create the application user with readWrite on the app DB only
+  ansible.builtin.shell: >
+    mongosh --quiet --host 127.0.0.1
+    -u "{{ mongo_admin_user }}" -p "$MONGO_ADMIN_PW" --authenticationDatabase admin
+    --eval 'db.getSiblingDB(process.env.DB_NAME).createUser({user: process.env.APP_USER, pwd: process.env.MONGO_PW, roles: [{role: "readWrite", db: process.env.DB_NAME}]})'
+  environment:
+    MONGO_ADMIN_PW: "{{ mongo_admin_password }}"
+    MONGO_PW: "{{ mongo_app_password }}"
+    DB_NAME: "{{ mongo_db_name }}"
+    APP_USER: "{{ mongo_app_user }}"
+  when: app_check.rc != 0
+  changed_when: true
+  no_log: true

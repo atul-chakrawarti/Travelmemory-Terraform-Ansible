@@ -1,0 +1,187 @@
+---
+- name: Download the NodeSource signing key
+  ansible.builtin.get_url:
+    url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+    dest: /usr/share/keyrings/nodesource.asc
+    mode: "0644"
+
+- name: Add the NodeSource repository for Node.js 22
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/nodesource.asc] https://deb.nodesource.com/node_22.x nodistro main"
+    filename: nodesource
+    state: present
+
+- name: Install Node.js (includes npm), Nginx and build tools
+  ansible.builtin.apt:
+    name: [nodejs, nginx, build-essential]
+    state: present
+    update_cache: true
+
+- name: Create and enable a 2 GB swap file (React build needs memory)
+  ansible.builtin.shell: |
+    fallocate -l 2G /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+  args:
+    creates: /swapfile
+
+- name: Persist swap in fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: "/swapfile none swap sw 0 0"
+    state: present
+
+- name: Create unprivileged app user
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ app_home }}"
+    create_home: false
+
+- name: Create app directory
+  ansible.builtin.file:
+    path: "{{ app_home }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0755"
+
+- name: Clone the TravelMemory repository
+  ansible.builtin.git:
+    repo: "{{ app_repo }}"
+    dest: "{{ app_home }}/app"
+    update: false
+  become_user: "{{ app_user }}"
+  environment:
+    HOME: "{{ app_home }}"
+
+- name: Write backend .env (MongoDB connection string)
+  ansible.builtin.template:
+    src: backend.env.j2
+    dest: "{{ app_home }}/app/backend/.env"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart backend
+
+- name: Install backend dependencies
+  ansible.builtin.command: npm install --omit=dev
+  args:
+    chdir: "{{ app_home }}/app/backend"
+    creates: "{{ app_home }}/app/backend/node_modules"
+  become_user: "{{ app_user }}"
+  environment:
+    HOME: "{{ app_home }}"
+
+- name: Install systemd unit for the backend
+  ansible.builtin.template:
+    src: travelmemory-backend.service.j2
+    dest: /etc/systemd/system/travelmemory-backend.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart backend
+
+- name: Enable and start the backend service
+  ansible.builtin.systemd:
+    name: travelmemory-backend
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Write frontend .env (backend URL is baked in at build time)
+  ansible.builtin.template:
+    src: frontend.env.j2
+    dest: "{{ app_home }}/app/frontend/.env"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0644"
+  register: frontend_env
+
+- name: Check for an existing frontend build
+  ansible.builtin.stat:
+    path: "{{ app_home }}/app/frontend/build/index.html"
+  register: frontend_build
+
+- name: Install frontend dependencies
+  ansible.builtin.command: npm install
+  args:
+    chdir: "{{ app_home }}/app/frontend"
+    creates: "{{ app_home }}/app/frontend/node_modules"
+  become_user: "{{ app_user }}"
+  environment:
+    HOME: "{{ app_home }}"
+
+- name: Run production build
+  ansible.builtin.command: npm run build
+  args:
+    chdir: "{{ app_home }}/app/frontend"
+  become_user: "{{ app_user }}"
+  environment:
+    HOME: "{{ app_home }}"
+    CI: "false"
+    NODE_OPTIONS: "--max-old-space-size=1536 --openssl-legacy-provider"
+  when: frontend_env.changed or not frontend_build.stat.exists
+  changed_when: true
+
+- name: Create the Nginx web root
+  ansible.builtin.file:
+    path: "{{ web_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Publish the build to the Nginx web root
+  ansible.builtin.copy:
+    src: "{{ app_home }}/app/frontend/build/"
+    dest: "{{ web_root }}/"
+    remote_src: true
+    owner: root
+    group: root
+    mode: preserve
+  notify: Reload nginx
+
+- name: Install Nginx site for TravelMemory
+  ansible.builtin.template:
+    src: nginx-travelmemory.conf.j2
+    dest: /etc/nginx/sites-available/travelmemory
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Enable TravelMemory site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/travelmemory
+    dest: /etc/nginx/sites-enabled/travelmemory
+    state: link
+  notify: Reload nginx
+
+- name: Disable the default Nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload nginx
+
+- name: Validate Nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Apply pending restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure Nginx is enabled and running
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Wait for the backend to listen on its port
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ backend_port }}"
+    timeout: 60

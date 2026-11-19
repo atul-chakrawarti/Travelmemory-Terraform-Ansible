@@ -1,0 +1,18 @@
+[Unit]
+Description=TravelMemory Express API
+After=network.target
+
+[Service]
+Type=simple
+User={{ app_user }}
+WorkingDirectory={{ app_home }}/app/backend
+EnvironmentFile={{ app_home }}/app/backend/.env
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

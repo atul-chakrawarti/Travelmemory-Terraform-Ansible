@@ -1,0 +1,42 @@
+---
+- name: Baseline and security hardening for all servers
+  hosts: all
+  become: true
+  roles:
+    - common
+    - hardening
+
+- name: Install, secure and seed MongoDB
+  hosts: db
+  become: true
+  roles:
+    - mongodb
+
+- name: Deploy TravelMemory web tier (Node.js API + React build + Nginx)
+  hosts: web
+  become: true
+  roles:
+    - webserver
+
+- name: Verify the end-to-end deployment
+  hosts: web
+  become: false
+  tasks:
+    - name: Backend health endpoint responds through Nginx
+      ansible.builtin.uri:
+        url: http://127.0.0.1/hello
+        return_content: true
+      register: hello
+
+    - name: Trip API reads from MongoDB through Nginx
+      ansible.builtin.uri:
+        url: http://127.0.0.1/trip
+        return_content: true
+      register: trips
+
+    - name: Show deployment result
+      ansible.builtin.debug:
+        msg:
+          - "Backend: {{ hello.content }}"
+          - "Trips in database: {{ trips.json | length }}"
+          - "App URL: http://{{ ansible_host }}"

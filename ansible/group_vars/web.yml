@@ -1,0 +1,5 @@
+---
+ufw_rules:
+  - { port: 22, source: any }
+  - { port: 80, source: any }
+  - { port: 443, source: any }

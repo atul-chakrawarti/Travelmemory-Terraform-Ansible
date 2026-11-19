@@ -61,7 +61,7 @@ variable "private_key_path" {
 variable "ssh_allowed_cidr" {
   type        = string
   description = "CIDR allowed to SSH to the web server. Empty string = auto-detect my current public IP as a /32."
-  default     = "0.0.0.0/0"
+  default     = ""
 
   validation {
     condition     = var.ssh_allowed_cidr == "" || can(cidrhost(var.ssh_allowed_cidr, 0))

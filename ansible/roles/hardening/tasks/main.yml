@@ -1,0 +1,71 @@
+---
+- name: Harden sshd (drop-in config)
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      MaxAuthTries 3
+      X11Forwarding no
+      AllowUsers ubuntu
+  notify: Restart ssh
+
+- name: Lock the root account password
+  ansible.builtin.user:
+    name: root
+    password_lock: true
+
+- name: Allow required ports
+  ansible.builtin.command: "ufw allow from {{ item.source }} to any port {{ item.port }} proto tcp"
+  loop: "{{ ufw_rules }}"
+  register: ufw_allow
+  changed_when: "'Skipping' not in ufw_allow.stdout"
+
+- name: Default deny incoming, allow outgoing
+  ansible.builtin.command: "ufw default {{ item }}"
+  loop: ["deny incoming", "allow outgoing"]
+  changed_when: false
+
+- name: Check ufw status
+  ansible.builtin.command: ufw status
+  register: ufw_status
+  changed_when: false
+
+- name: Enable ufw
+  ansible.builtin.command: ufw --force enable
+  when: "'inactive' in ufw_status.stdout"
+
+- name: Configure fail2ban for sshd
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/sshd.local
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      maxretry = 3
+      findtime = 10m
+      bantime = 1h
+  notify: Restart fail2ban
+
+- name: Ensure fail2ban is running
+  ansible.builtin.service:
+    name: fail2ban
+    state: started
+    enabled: true
+
+- name: Enable unattended security upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";

@@ -1,0 +1,13 @@
+---
+mongo_db_name: travelmemory
+mongo_app_user: travelmemory_app
+mongo_admin_user: admin
+mongo_admin_password: "{{ vault_mongo_admin_password }}"
+mongo_app_password: "{{ vault_mongo_app_password }}"
+
+app_user: travelmemory
+app_home: /opt/travelmemory
+app_repo: https://github.com/UnpredictablePrashant/TravelMemory.git
+backend_port: 3001
+web_root: /var/www/travelmemory
+timezone: Asia/Kolkata
